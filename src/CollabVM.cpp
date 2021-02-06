@@ -1021,28 +1021,16 @@ void CollabVMServer::IPDataTimerCallback(const boost::system::error_code& ec)
 	}
 }
 
-bool CollabVMServer::ShouldCleanUpIPData(IPData& ip_data) const
+bool CollabVMServer::ShouldCleanUpIPData(IPData& ip_data)
 {
 	//if (ip_data.connections)
 	//	return false;
 
 	auto now = std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::steady_clock::now());
 
-	if ((now - ip_data.last_chat_msg).count() < database_.Configuration.ChatRateTime)
+	if (CheckRateLimit(ip_data, 0, database_.Configuration.ChatMuteTime))
 		return false;
 
-	if (ip_data.chat_muted)
-	{
-		if ((now - ip_data.last_chat_msg).count() >= database_.Configuration.ChatMuteTime && ip_data.chat_muted == kTempMute)
-		{
-			ip_data.chat_muted = kUnmuted;
-		}
-		else
-		{
-			return false;
-		}
-	}
-		
 	if (ip_data.failed_logins)
 	{
 		if ((now - ip_data.failed_login_time).count() >= kLoginIPBlockTime)
@@ -2063,7 +2051,8 @@ void CollabVMServer::MuteUser(const std::shared_ptr<CollabVMUser>& user, bool pe
 	std::cout << " IP: " << user->ip_data.GetIP() << " Username: \"" <<
 		*user->username << '"' << std::endl;
 	// Mute the user
-	user->ip_data.last_chat_msg = now;
+	user->ip_data.last_action[0] = now;
+	user->ip_data.user_ratelimited[0] = true;
 	user->ip_data.chat_muted = permanent ? kPermMute : kTempMute;
 
 #define part1 "You have been muted"
@@ -2091,6 +2080,7 @@ void CollabVMServer::MuteUser(const std::shared_ptr<CollabVMUser>& user, bool pe
 void CollabVMServer::UnmuteUser(const std::shared_ptr<CollabVMUser>& user)
 {
 	user->ip_data.chat_muted = kUnmuted;
+	user->ip_data.user_ratelimited[0] = false;
 	std::cout << "[Chat] User was unmuted."
 		" IP: " << user->ip_data.GetIP() << " Username: \"" <<
 		*user->username << '"' << std::endl;
@@ -2131,6 +2121,8 @@ void CollabVMServer::OnKeyInstruction(const std::shared_ptr<CollabVMUser>& user,
 
 void CollabVMServer::OnRenameInstruction(const std::shared_ptr<CollabVMUser>& user, std::vector<char*>& args)
 {
+	if (RateLimit(user, 2, 1, 3, 1)) return;
+
 	if (args.empty())
 	{
 		// The users wants the server to generate a username for them
@@ -2826,38 +2818,68 @@ void CollabVMServer::OnQEMUResponse(std::weak_ptr<CollabVMUser> data, rapidjson:
 	}
 }
 
+bool CollabVMServer::CheckRateLimit(IPData& ip_data, uint8_t action, uint16_t limitTime)
+{
+	if (action >= USER_ACTIONS)
+		return true;
+
+	// Check if the user is ratelimited, then un-block them if necessary
+	auto now = std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::steady_clock::now());
+	if (ip_data.user_ratelimited[action])
+	{
+		if ((now - ip_data.last_action[action]).count() >= limitTime)
+			ip_data.user_ratelimited[action] = false;
+		else
+			return true;
+	}
+	return false;
+}
+
+bool CollabVMServer::RateLimit(const std::shared_ptr<CollabVMUser>& user, uint8_t action, uint16_t maxTime, uint16_t maxTimes, uint16_t limitTime)
+{
+	if (CheckRateLimit(user->ip_data, action, limitTime))
+		return true;
+
+	if (user->user_rank == kAdmin)
+		return false;
+
+	// Ratelimit whatever the user wants to do
+
+	auto now = std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::steady_clock::now());
+
+	// Calculate the time since the user's last action
+	if ((now - user->ip_data.last_action[action]).count() < maxTime)
+	{
+		if (++user->ip_data.action_count[action] >= maxTimes)
+		{
+			return true;
+		}
+	}
+	else
+	{
+		user->ip_data.action_count[action] = 0;
+		user->ip_data.last_action[action] = now;
+	}
+	return false;
+}
+
 void CollabVMServer::OnChatInstruction(const std::shared_ptr<CollabVMUser>& user, std::vector<char*>& args)
 {
-	if (args.size() != 1 || !user->username || !user->vm_controller)
+	if (args.size() != 1 || !user->username || !user->vm_controller || user->ip_data.chat_muted == kPermMute)
 		return;
-
-	// Limit message send rate
-	auto now = std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::steady_clock::now());
-	if (user->ip_data.chat_muted)
-	{
-		if ((now - user->ip_data.last_chat_msg).count() >= database_.Configuration.ChatMuteTime && user->ip_data.chat_muted == kTempMute)
-			user->ip_data.chat_muted = kUnmuted;
-		else
-			return;
-	}
 
 	if (database_.Configuration.ChatRateCount && database_.Configuration.ChatRateTime)
 	{
-		// Calculate the time since the user's last message
-		if ((now - user->ip_data.last_chat_msg).count() < database_.Configuration.ChatRateTime)
+		if (RateLimit(user, 0, database_.Configuration.ChatRateTime, database_.Configuration.ChatRateCount, database_.Configuration.ChatMuteTime))
 		{
-			if (++user->ip_data.chat_msg_count >= database_.Configuration.ChatRateCount)
-			{
-				if (user->user_rank == kUnregistered || (user->user_rank == kModerator && !(database_.Configuration.ModPerms & 16))) {
-					MuteUser(user, false);
-					return;
-				}
-			}
+			if (!user->ip_data.chat_muted)
+				MuteUser(user, false);
+			return;
 		}
 		else
 		{
-			user->ip_data.chat_msg_count = 0;
-			user->ip_data.last_chat_msg = now;
+			if (user->ip_data.chat_muted)
+				UnmuteUser(user);
 		}
 	}
 
@@ -2876,10 +2898,19 @@ void CollabVMServer::OnTurnInstruction(const std::shared_ptr<CollabVMUser>& user
 {
 	if (user->vm_controller != nullptr && user->username)
 	{
-		if (args.size() == 1 && args[0][0] == '0')
-			user->vm_controller->EndTurn(user);
+		if (!RateLimit(user, 1, 1, 3, 1))
+		{
+			if (args.size() == 1 && args[0][0] == '0')
+				user->vm_controller->EndTurn(user);
+			else
+				user->vm_controller->TurnRequest(user, 0, user->user_rank == UserRank::kAdmin || (user->user_rank == UserRank::kModerator && database_.Configuration.ModPerms & 64));
+		}
 		else
-			user->vm_controller->TurnRequest(user, 0, user->user_rank == UserRank::kAdmin || (user->user_rank == UserRank::kModerator && database_.Configuration.ModPerms & 64));
+		{
+			if (user->vm_controller->CurrentTurn())
+				if (user->waiting_turn || user->vm_controller->CurrentTurn()->username == user->username)
+					user->vm_controller->EndTurn(user);
+		}
 	}
 }
 

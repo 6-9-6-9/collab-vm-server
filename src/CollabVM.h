@@ -619,7 +619,7 @@ private:
 	/**
 	 * Determines whether an IPData object should be deleted.
 	 */
-	bool ShouldCleanUpIPData(IPData& ip_data) const;
+	bool ShouldCleanUpIPData(IPData& ip_data);
 	void RemoveConnection(std::shared_ptr<CollabVMUser>& user);
 
 	void UpdateVMStatus(const std::string& vm_name, VMController::ControllerState state);
@@ -629,6 +629,9 @@ private:
 	 * received.
 	 */
 	void OnQEMUResponse(std::weak_ptr<CollabVMUser> data, rapidjson::Document& d);
+
+	bool CheckRateLimit(IPData& ip_data, uint8_t action, uint16_t limitTime);
+	bool RateLimit(const std::shared_ptr<CollabVMUser>& user, uint8_t action, uint16_t maxTime, uint16_t maxTimes, uint16_t limitTime);
 
 	std::string GenerateUuid();
 

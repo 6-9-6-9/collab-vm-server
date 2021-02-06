@@ -8,6 +8,8 @@
 #include <websocketpp/common/connection_hdl.hpp>
 #include "GuacUser.h"
 
+#define USER_ACTIONS 3
+
 class VMController;
 struct UploadInfo;
 
@@ -37,15 +39,9 @@ struct IPData
 	 */
 	uint8_t connections;
 
-	/**
-	 * The last time a chat message was sent from this IP.
-	 */
-	std::chrono::time_point<std::chrono::steady_clock, std::chrono::seconds> last_chat_msg;
-
-	/**
-	 * The number of chat messages that were sent within a certain amount of time.
-	 */
-	uint8_t chat_msg_count;
+	bool user_ratelimited[USER_ACTIONS] = {false};
+	std::chrono::time_point<std::chrono::steady_clock, std::chrono::seconds> last_action[USER_ACTIONS];
+	uint16_t action_count[USER_ACTIONS] = {0};
 
 	/**
 	 * Whether the user is muted from the chat.
@@ -90,7 +86,6 @@ protected:
 	IPData(IPType type, bool one_connection) :
 		type(type),
 		connections(one_connection),
-		chat_msg_count(0),
 		chat_muted(kUnmuted),
 		//has_voted(false),
 		upload_in_progress(false),
