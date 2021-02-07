@@ -8,7 +8,7 @@
 #include <websocketpp/common/connection_hdl.hpp>
 #include "GuacUser.h"
 
-#define USER_ACTIONS 3
+#define USER_ACTIONS 4
 
 class VMController;
 struct UploadInfo;

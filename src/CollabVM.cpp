@@ -2761,6 +2761,7 @@ void CollabVMServer::OnAdminInstruction(const std::shared_ptr<CollabVMUser>& use
 
 void CollabVMServer::OnListInstruction(const std::shared_ptr<CollabVMUser>& user, std::vector<char*>& args)
 {
+	if (RateLimit(user, 3, 1, 3, 1)) return;
 	std::string instr("4.list");
 	for (auto it = vm_controllers_.begin(); it != vm_controllers_.end(); it++)
 	{
